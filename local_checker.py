@@ -105,7 +105,7 @@ class World(object):
                 else:
                     list.append(competitors, (num_fleets, player))
 
-            if 0 == len(competitors): return
+            if 0 == len(competitors): continue
 
             competitors = sorted(competitors, reverse=True)
 
