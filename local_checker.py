@@ -105,22 +105,22 @@ class World(object):
                 else:
                     list.append(competitors, (num_fleets, player))
 
-        if 0 == len(competitors): return
+            if 0 == len(competitors): return
 
-        competitors = sorted(competitors, reverse=True)
+            competitors = sorted(competitors, reverse=True)
 
-        count_a, player_a = competitors[0]
-        count_b, player_b = (planet.population, planet.owner) if 1 == len(competitors) else competitors[1]
+            count_a, player_a = competitors[0]
+            count_b, player_b = (planet.population, planet.owner) if 1 == len(competitors) else competitors[1]
 
-        if (count_a == count_b):
-            planet.population -= min(count_a, planet.population)
-        else:
-            if count_a <= planet.population:
-                planet.population -= count_a
+            if (count_a == count_b):
+                planet.population -= min(count_a, planet.population)
             else:
-                opponent_count = max(count_b, planet.population)
-                planet.population = count_a - opponent_count
-                planet.owner = player_a
+                if count_a <= planet.population:
+                    planet.population -= count_a
+                else:
+                    opponent_count = max(count_b, planet.population)
+                    planet.population = count_a - opponent_count
+                    planet.owner = player_a
 
     def increase_population(self):
         for planet in self.planets.values():
