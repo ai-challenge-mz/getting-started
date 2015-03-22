@@ -1,0 +1,9 @@
+csharp/bin
+csharp/obj
+csharp/*.sln
+csharp/*.suo
+java/UpgradeBot.jar
+java/build
+*.hi
+*.o
+index.html

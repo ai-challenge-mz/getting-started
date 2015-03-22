@@ -1,0 +1,3 @@
+git clone https://github.com/parsifal-47/Piedit.git
+pip install Pillow
+python Piedit/piedit/interpreter.py pietbot.png
