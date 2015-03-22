@@ -10,6 +10,7 @@ import itertools
 import argparse
 import subprocess
 import collections
+import re
 
 NEUTURAL_ID = 0
 CUSTOM_BOT_ID = random.randint(2, 100)
@@ -200,24 +201,25 @@ class Replay(object):
     def save(self):
         import json
         replay_json = json.dumps({'states': self.states, 'result': self.result}, indent=2)
-        with open('index.html', 'w') as f:
-            f.write('''
+        replay_html = "\n".join((
+            '''
             <!DOCTYPE html>
             <html>
               <head>
                 <script language="javascript" src="all.js"></script>
               </head>
               <body>
-                <pre id="json" style="display:none">''')
-
-            f.write(replay_json)
-
-            f.write('''
+                <pre id="json" style="display:none">''',
+            replay_json,
+            '''
                 </pre>
               </body>
               <script language="javascript" defer>h$main(h$mainZCMainzimain);</script>
             </html>
-            ''')
+            '''))
+        replay_html = re.sub(r'\r', '', replay_html)
+        with open('index.html', 'w') as f:
+            f.write(replay_html)
 
 
 def dump_planet(p):
