@@ -1,15 +1,19 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Main where
 
 import Control.Applicative
+import Control.Concurrent
 import Control.Exception
 import Control.Monad
 import qualified Data.Aeson as A
 import qualified Data.ByteString.Lazy.Char8 as B
 import qualified Data.Text as T
+import Data.Time.Clock.POSIX
+
 import JavaScript.Canvas hiding (Left, Right)
 import JavaScript.JQuery (select)
 import GHCJS.DOM (runWebGUI, webViewGetDomDocument)
@@ -20,7 +24,6 @@ import GHCJS.DOM.HTMLElement (htmlElementGetInnerHTML, htmlElementSetInnerHTML)
 import GHCJS.DOM.HTMLPreElement (castToHTMLPreElement)
 import GHCJS.Types (castRef)
 import GHCJS.Foreign (indexArray)
-import Control.Concurrent
 
 import Types
 import Util
@@ -47,20 +50,44 @@ data WorldVM = WorldVM
 
 main :: IO ()
 main = runWebGUI $ \webView -> do
-    putStrLn "Starting"
     Just document <- webViewGetDomDocument webView
     Just body <- documentGetBody document
     Just pre <- fmap castToHTMLPreElement <$> documentGetElementById document "json" 
     _canvas <- attachCanvas body document
     resultElem <- attachResult body document
+
+    parsingLock <- newEmptyMVar
+
+    void . forkIO $
+        let go tick =
+                tryTakeMVar parsingLock >>= \case
+                    Just _ -> return ()
+                    _ -> do
+                        htmlElementSetInnerHTML
+                            resultElem
+                            ("Loading." ++ replicate (tick `rem` 3) '.')
+                        threadDelay 500000
+                        go (tick + 1)
+        in go 0
+
+    beforeParsingTimestamp <- getPOSIXTime
+
     jsonString <- htmlElementGetInnerHTML pre :: IO String
     putStrLn "ohai"
     let replay = A.eitherDecode (B.pack jsonString) :: Either String Replay
     case replay of
-        Left err -> htmlElementSetInnerHTML resultElem err
-        Right (Replay result states) -> do
-            putStrLn "Success!"
-            htmlElementSetInnerHTML resultElem (show result)
+        Left err -> do
+            putMVar parsingLock ()
+            htmlElementSetInnerHTML resultElem err
+        Right (Replay [player1, player2] result states) -> do
+            putMVar parsingLock ()
+            afterParsingTimestamp <- getPOSIXTime
+            putStrLn ("JSON parsed in " ++ show (afterParsingTimestamp - beforeParsingTimestamp))
+            htmlElementSetInnerHTML resultElem (unlines
+                [ "Player 1: <span style=\"color:green\">" ++ player1 ++ "</span><br/>"
+                , "Player 2: <span style=\"color:red\">" ++ player2 ++ "</span><br/>"
+                , show result
+                ])
 
             -- TODO: this should be possible without jquery
             -- ctx <- getContext canvas
@@ -159,8 +186,8 @@ drawLegend ctx (Turn turn) = do
 
 colorForOwner :: Int -> (Int, Int, Int)
 colorForOwner 0 = (200, 200, 200)
-colorForOwner 1 = (200, 0, 0)
-colorForOwner _ = (0, 200, 50)
+colorForOwner 1 = (0, 200, 50)
+colorForOwner _ = (200, 0, 0)
 
 projectWorld :: World -> WorldVM
 projectWorld world@(World turn planets fleets) =

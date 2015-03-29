@@ -76,7 +76,9 @@ data MatchResult = MatchResult
 instance Show MatchResult where
     show (MatchResult turn planets winner gameOver) = unlines
         ( show turn
-        : "Winner: " <> show winner
+        : case winner of
+            Just name -> "Winner: " <> name
+            Nothing -> "Draw"
         : "Game over: " <> show gameOver
         : map show planets
         )
@@ -91,9 +93,13 @@ data Fleet = Fleet
     } deriving Show
 
 data World = World Turn [Planet] [Fleet]
-    deriving Show
+
+instance Show World where
+    show (World turn planets fleets) =
+        unlines (show turn : map show planets ++ map show fleets)
 
 data Replay = Replay
-    { repResult :: !MatchResult
+    { repNames :: ![String]
+    , repResult :: !MatchResult
     , repStates :: ![World]
     } deriving Show

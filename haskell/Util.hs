@@ -14,6 +14,7 @@ module Util
     , readMessage
     , readUntilDot
     , upgradeCost
+    , removeEmptyLaunches
     ) where
 
 import Prelude hiding (log)
@@ -111,3 +112,9 @@ isEliminated player (World _ planets fleets) =
     all ((/= player) . plOwner) planets
     &&
     all ((/= player) . flOwner) fleets
+
+removeEmptyLaunches :: BotMessage -> BotMessage
+removeEmptyLaunches (BotMessage launches upgrades) =
+    BotMessage
+        (filter ((/= ShipCount 0) . lCount) launches)
+        upgrades

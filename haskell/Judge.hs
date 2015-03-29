@@ -5,7 +5,7 @@ import Control.Concurrent
 import Control.Exception (SomeException, catch)
 import Control.Monad
 import Data.Char
-import Data.List (partition, sortBy)
+import Data.List (partition, sortBy, isPrefixOf)
 import qualified Data.Map.Strict as M
 import Data.Maybe
 import Data.Monoid
@@ -22,6 +22,8 @@ import Text.Printf
 import Text.Read
 
 import Channel
+import Report
+import Maps
 import Types
 import Util
 
@@ -31,9 +33,9 @@ Usage:
   server [options] <bot> <bot>
 
 Options:
-  --mapSize=<number>     default is 5
-  --neutralPlanetCount=<number>  default is 5
+  --mapSize=<mapSize>  can be small, smallInverted, medium, mediumInverted or large, default is small
   --turnLimit=<number>   default is 200
+  --reportFile=<reportFile>  optional
   <bot>  these can be local filenames, port numbers or builtin 'idle'
 |]
 
@@ -44,14 +46,36 @@ main = do
             fromMaybe def $ do
                 raw <- Docopt.getArg args (Docopt.longOption name)
                 readMaybe raw
-        mapSize = arg 5 "mapSize"
-        neutralPlanetCount = arg 5 "neutralPlanetCount"
+        mapSize = fromMaybe "small"
+            (Docopt.getArg args (Docopt.longOption "mapSize"))
         turnLimit = Turn (arg 200 "turnLimit")
         bots = Docopt.getAllArgs args (Docopt.argument "bot")
+        maybeReportFile = Docopt.getArg args (Docopt.longOption "reportFile")
+
+    world <- case mapSize of
+        "small" -> return Maps.small
+        "smallInverted" -> return Maps.smallInverted
+        "medium" -> return Maps.medium
+        "mediumInverted" -> return Maps.mediumInverted
+        "large" -> return Maps.large
+        _ -> do
+            putStrLn ("Invalid mapSize: " ++ mapSize)
+            exitFailure
+
     players <- launchBots bots
-    let world = createWorld mapSize neutralPlanetCount
-    result <- simulateMatch players world turnLimit
+
+    -- JVM needs some time to start
+    shebangs <- fmap (map (take 20)) (mapM readFile bots)
+    when (any ("#!/bin/sh" `isPrefixOf`) shebangs) $ do
+        putStrLn "JVM detected, giving it time to start"
+        threadDelay (10 * 1000 * 1000)
+
+    replay@(Replay _names result _states) <-
+        simulateMatch players world turnLimit
     print result
+    case maybeReportFile of
+        Just reportFile -> dumpReport replay reportFile
+        _ -> return ()
     mapM_ botClose players
 
 data Bot = Bot
@@ -116,31 +140,17 @@ launchBots = mapM launch . zip [1..]
                 print ("failed to start " ++ path)
                 exitWith (ExitFailure 10)
 
--- TODO: fair map generation
-createWorld :: Int -> Int -> [Planet]
-createWorld mapSize neutralCount
-    = Planet (PlanetId 0)
-        (Point2D 0 mapSize) (ShipCount 1) (ShipCount 10) (PlayerId 1)
-    : Planet (PlanetId 1)
-        (Point2D mapSize 0) (ShipCount 1) (ShipCount 10) (PlayerId 2)
-    : neutrals
-    where
-    neutrals = take neutralCount
-        [ Planet (PlanetId (i * mapSize + j + 2))
-            (Point2D i j) (ShipCount 1) (ShipCount 3) nobody
-        | i <- [0 .. mapSize]
-        , j <- [0 .. mapSize]
-        ]
-
-simulateMatch :: [Bot] -> [Planet] -> Turn -> IO MatchResult
+simulateMatch :: [Bot] -> [Planet] -> Turn -> IO Replay
 simulateMatch bots initialPlanets turnLimit =
-    go (World mempty initialPlanets [])
+    go [initialWorld] initialWorld
     where
-    go world = do
+    initialWorld = World mempty initialPlanets []
+    go states world = do
         nextWorldOrGameOver <- simulateTurn bots world turnLimit
         case nextWorldOrGameOver of
-            Right nextWorld -> go nextWorld
-            Left matchResult -> return matchResult
+            Right nextWorld -> go (nextWorld : states) nextWorld
+            Left matchResult ->
+                return (Replay (map botName bots) matchResult (reverse states))
 
 simulateTurn :: [Bot] -> World -> Turn -> IO (Either MatchResult World)
 simulateTurn bots w@(World turn planets _) _turnLimit
@@ -223,7 +233,7 @@ simulateProduction (World turn planets fleets) =
     (World turn (map produce planets) fleets)
     where
     produce p | plOwner p == nobody = p
-    produce p = p { plPopulation = plPopulation p <> plProduction p }
+    produce p = p { plPopulation = max mempty (plPopulation p <> plProduction p) }
 
 executeOrders :: [(BotMessage, PlayerId)] -> World -> World
 executeOrders orders world = foldr executeOrder world orders
@@ -282,20 +292,26 @@ resolveBattles (World turn planets fleets) =
         (winners, losers) = partition ((== maxForce) . snd) competitors
 
 getOrders :: World -> [Bot] -> IO [Either BotError BotMessage]
-getOrders (World _ planets _) =
+getOrders world@(World _ planets _) =
     mapM $ \(Bot { botId = me, botOutput = ch }) ->
         let isPlanetMine pid =
                 not (null ([p | p <- planets, plId p == pid, plOwner p == me]))
-            validate (Right (BotMessage launches _))
+            validate (Right bm@(BotMessage launches _))
                 | not (all (isPlanetMine . lSrc) launches)
-                = Left (BotIllegal "attempting to launch from enemy planet")
-            validate (Right (BotMessage _ upgrades))
+                = Left (BotIllegal ("attempting to launch from enemy planet:\n" <> show bm))
+            validate (Right bm@(BotMessage launches _))
+                | any ((<= ShipCount 0) . lCount) launches
+                = Left (BotIllegal ("attempting to launch non-positive number of ships:\n" <> show bm))
+            validate (Right bm@(BotMessage launches _))
+                | not (all (isJust . (\pid -> getPlanetById pid world) . lDst) launches)
+                = Left (BotIllegal ("attempting to launch to unknown planet:\n" <> show bm))
+            validate (Right bm@(BotMessage _ upgrades))
                 | not (all isPlanetMine upgrades)
-                = Left (BotIllegal "attempting to upgrade enemy planet")
-            validate (Right (BotMessage _ upgrades))
+                = Left (BotIllegal ("attempting to upgrade enemy planet:\n" <> show bm))
+            validate (Right bm@(BotMessage _ upgrades))
                 | not (distinct upgrades)
-                = Left (BotIllegal "attempting to upgrade twice")
-            validate (Right (BotMessage launches upgrades))
+                = Left (BotIllegal ("attempting to upgrade twice:\n" <> show bm))
+            validate (Right bm@(BotMessage launches upgrades))
                 | or [ cost > pop
                      | p@(Planet pid _ _ pop _) <- planets
                      , let cost = (mconcat . mconcat)
@@ -303,14 +319,14 @@ getOrders (World _ planets _) =
                              , [upgradeCost p | pid `elem` upgrades]
                              ]
                      ]
-                = Left (BotIllegal "not enough ships to execute all orders")
+                = Left (BotIllegal ("not enough ships to execute all orders:\n" <> show bm))
             validate o = o
         in fmap
             (validate . fromMaybe (Left BotTimeout))
             (timeout
                 1000000 -- timeout 1 second
                 (fmap
-                    (either (Left . BotIllegal) Right)
+                    (either (Left . BotIllegal) (Right . removeEmptyLaunches))
                     (chReadBotMessage ch)))
 
 chReadBotMessage :: InChannel -> IO (Either String BotMessage)
